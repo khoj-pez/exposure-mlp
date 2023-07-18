@@ -33,15 +33,19 @@ class ImageDataset(Dataset):
         self.image = Image.open(image_path).resize(image_size)
         self.rgb_vals = torch.from_numpy(np.array(self.image)).reshape(-1, 3).to(device)
         self.rgb_vals = self.rgb_vals.float() / 255
-        self.rgb_vals = adjust_exposure(self.rgb_vals, exposure)
+        self.adjusted_rgb_vals = self.rgb_vals.clone()
         self.coords = get_coords(image_size[0], normalize=True).reshape(-1, 2).to(device)
         self.exposure = torch.full((len(self.rgb_vals), 1), exposure, device=device, dtype=torch.float32)
 
+    def adjust_exposure(self, exposure):
+        self.adjusted_rgb_vals = adjust_exposure(self.rgb_vals, exposure)
+        self.exposure = torch.full((len(self.rgb_vals), 1), exposure, device=self.exposure.device, dtype=torch.float32)
 
     def __len__(self):
         return len(self.rgb_vals)
     def __getitem__(self, idx):
-        return self.coords[idx], self.rgb_vals[idx], self.exposure[idx]
+        return self.coords[idx], self.adjusted_rgb_vals[idx], self.rgb_vals[idx], self.exposure[idx]
+        # return self.coords[idx], self.rgb_vals[idx], self.exposure[idx]
 
 class Trainer:
     def __init__(self, image_path, image_size, model_type = 'mlp', use_pe = True, device = torch.device('cpu'), exposure = 2):
@@ -53,10 +57,9 @@ class Trainer:
            self.model = FCNet().to(device)
         elif model_type == 'mlp_exposure':
             self.model = FCNetExposure().to(device)
+            self.load_model()
         else:
             pass
-
-        # self.load_model()
 
         lr = 1e-3
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
@@ -67,42 +70,47 @@ class Trainer:
     def run(self):
         pbar = tqdm(range(self.nepochs))
         for epoch in pbar:
-            # exposures = [5]
-            # for exposure in exposures:
-            #     self.dataset.exposure = torch.full((len(self.dataset.rgb_vals), 1), exposure, device=self.dataset.exposure.device, dtype=torch.float32)
-            #     self.dataloader = DataLoader(self.dataset, batch_size=4096, shuffle=True)
+            exposures = [2.5]
+            for exposure in exposures:
+                self.dataset.adjust_exposure(exposure)
+                # self.dataloader = DataLoader(self.dataset, batch_size=4096, shuffle=True)
 
-            self.model.train()
-            for coords, rgb_vals, exposure in self.dataloader:
-                self.optimizer.zero_grad()
-                if isinstance(self.model, FCNetExposure):
-                    pred = self.model(coords, exposure)
-                else:
-                    pred = self.model(coords)
-                loss = self.criterion(pred, rgb_vals)
-                loss.backward()
-                self.optimizer.step()
+                self.model.train()
+                for coords, adjusted_rgb_vals, rgb_vals, exposure in self.dataloader:
+                    self.optimizer.zero_grad()
+                    if isinstance(self.model, FCNetExposure):
+                        pred = self.model(coords, exposure)
+                        loss = self.criterion(pred, rgb_vals)
+                    else:
+                        pred = self.model(coords)
+                        loss = self.criterion(pred, adjusted_rgb_vals)
+                    # loss = self.criterion(pred, rgb_vals)
+                    loss.backward()
+                    self.optimizer.step()
 
-            self.model.eval()
-            with torch.no_grad():
-                coords = self.dataset.coords
-                exposure = self.dataset.exposure
-                if isinstance(self.model, FCNetExposure):
-                    pred = self.model(coords, exposure)
-                else:
-                    pred = self.model(coords)
-                gt = self.dataset.rgb_vals
-                psnr = get_psnr(pred, gt)
-            pbar.set_description(f'Epoch: {epoch}, PSNR: {psnr:.2f}')
-            pred = pred.cpu().numpy().reshape(*self.dataset.image.size[::-1], 3)
-            pred = (pred * 255).astype(np.uint8)
-            gt = self.dataset.rgb_vals.cpu().numpy().reshape(*self.dataset.image.size[::-1], 3)
-            gt = (gt * 255).astype(np.uint8)
-            save_image = np.hstack([gt, pred])
-            save_image = Image.fromarray(save_image)
-            #save_image.save(f'output_{epoch}.png')
-            self.visualize(np.array(save_image), text = '# params: {}, PSNR: {:.2f}'.format(self.get_num_params(), psnr))
-        # self.save_model()
+                self.model.eval()
+                with torch.no_grad():
+                    coords = self.dataset.coords
+                    exposure = self.dataset.exposure
+                    if isinstance(self.model, FCNetExposure):
+                        pred = self.model(coords, exposure)
+                    else:
+                        pred = self.model(coords)
+                    gt = self.dataset.rgb_vals
+                    psnr = get_psnr(pred, gt)
+                pbar.set_description(f'Epoch: {epoch}, PSNR: {psnr:.2f}')
+                pred = pred.cpu().numpy().reshape(*self.dataset.image.size[::-1], 3)
+                pred = (pred * 255).astype(np.uint8)
+                gt = self.dataset.rgb_vals.cpu().numpy().reshape(*self.dataset.image.size[::-1], 3)
+                gt = (gt * 255).astype(np.uint8)
+                adjusted = self.dataset.adjusted_rgb_vals.cpu().numpy().reshape(*self.dataset.image.size[::-1], 3)
+                adjusted = (adjusted * 255).astype(np.uint8)
+                save_image = np.hstack([adjusted, pred])
+                save_image = Image.fromarray(save_image)
+                #save_image.save(f'output_{epoch}.png')
+                self.visualize(np.array(save_image), text = '# params: {}, PSNR: {:.2f}'.format(self.get_num_params(), psnr))
+        if isinstance(self.model, FCNetExposure):
+            self.save_model()
 
     def save_model(self):
         torch.save(self.model.state_dict(), 'model_weights.pth')
@@ -111,7 +119,7 @@ class Trainer:
         try:
             self.model.load_state_dict(torch.load('model_weights.pth'))
             self.model.eval()
-            print("Loaded model parameters.")
+            print("Loaded model parameters")
         except FileNotFoundError:
             print("No saved model parameters found, starting from scratch.")
 
@@ -130,13 +138,13 @@ class Trainer:
         thickness = 2
 
         cv2.putText(save_image, text, position, font, scale, color, thickness)
-        cv2.imshow('image', save_image)
+        cv2.imshow('Exposure correction', save_image)
         cv2.waitKey(1)
 
 
 
 if __name__ == '__main__':
-    image_path = 'image.jpg'
+    image_path = 'sfu.jpeg'
     image_size = (256, 256)
     model_type = 'mlp_exposure'
     device = torch.device('cpu')
