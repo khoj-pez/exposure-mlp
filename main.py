@@ -41,11 +41,10 @@ class ImageDataset(Dataset):
     def __len__(self):
         return len(self.rgb_vals)
     def __getitem__(self, idx):
-        #return self.coords[idx], self.rgb_vals[idx]
         return self.coords[idx], self.rgb_vals[idx], self.exposure[idx]
 
 class Trainer:
-    def __init__(self, image_path, image_size, model_type = 'mlp', use_pe = True, device = torch.device('cpu'), exposure = 1.2):
+    def __init__(self, image_path, image_size, model_type = 'mlp', use_pe = True, device = torch.device('cpu'), exposure = 2):
         self.dataset = ImageDataset(image_path, image_size, device, exposure)
         self.dataloader = DataLoader(self.dataset, batch_size=4096, shuffle=True)
 
@@ -57,6 +56,8 @@ class Trainer:
         else:
             pass
 
+        # self.load_model()
+
         lr = 1e-3
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
         self.criterion = torch.nn.MSELoss()
@@ -66,6 +67,11 @@ class Trainer:
     def run(self):
         pbar = tqdm(range(self.nepochs))
         for epoch in pbar:
+            # exposures = [5]
+            # for exposure in exposures:
+            #     self.dataset.exposure = torch.full((len(self.dataset.rgb_vals), 1), exposure, device=self.dataset.exposure.device, dtype=torch.float32)
+            #     self.dataloader = DataLoader(self.dataset, batch_size=4096, shuffle=True)
+
             self.model.train()
             for coords, rgb_vals, exposure in self.dataloader:
                 self.optimizer.zero_grad()
@@ -96,6 +102,18 @@ class Trainer:
             save_image = Image.fromarray(save_image)
             #save_image.save(f'output_{epoch}.png')
             self.visualize(np.array(save_image), text = '# params: {}, PSNR: {:.2f}'.format(self.get_num_params(), psnr))
+        # self.save_model()
+
+    def save_model(self):
+        torch.save(self.model.state_dict(), 'model_weights.pth')
+
+    def load_model(self):
+        try:
+            self.model.load_state_dict(torch.load('model_weights.pth'))
+            self.model.eval()
+            print("Loaded model parameters.")
+        except FileNotFoundError:
+            print("No saved model parameters found, starting from scratch.")
 
     def get_num_params(self):
         return sum(p.numel() for p in self.model.parameters() if p.requires_grad)
