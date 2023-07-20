@@ -116,7 +116,7 @@ class DemoWindow(QtWidgets.QWidget):
         self.nerf_view = LabeledImageViewer(self.placeholder_image, "Baseline MLP")
         self.exp_nerf_view = LabeledImageViewer(self.placeholder_image, "Correction MLP")
 
-        self.train_button = QtWidgets.QPushButton("Train", self)
+        self.train_button = QtWidgets.QPushButton("Run", self)
         self.train_button.clicked.connect(self.train)
         
         self.hbox.addWidget(self.nerf_view)
